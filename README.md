@@ -1,6 +1,6 @@
 # Industrial Accidents Analysis Dashboard
 
-
+FIRST CLONE THIS REPO AND FOLLOW BELOW STEPS
 
 ## Setup
 
