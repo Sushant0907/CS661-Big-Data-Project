@@ -153,6 +153,145 @@ state_coordinates = {
     'Goa': {'lat': 15.2993, 'lon': 74.1240}
 }
 
+def create_choropleth_map(df):
+    """
+    Create a choropleth map showing accident counts by state with color gradient
+    (red for most accidents, blue for least accidents)
+    """
+    # Group data by State to get accident counts
+    state_counts = df.groupby('State').size().reset_index(name='Accident_Count')
+    
+    # Add min and max for reference in the hover data
+    min_accidents = state_counts['Accident_Count'].min()
+    max_accidents = state_counts['Accident_Count'].max()
+    state_counts['Min'] = min_accidents
+    state_counts['Max'] = max_accidents
+    
+    # Load India state GeoJSON with proper boundaries
+    india_geojson = load_geojson()
+    
+    # Check the property name that contains state names in the GeoJSON
+    feature_key = "name"
+    if india_geojson and india_geojson["features"]:
+        props = india_geojson["features"][0]["properties"]
+        # Look for common property names for state names
+        for key in ["name", "NAME", "NAME_1", "ST_NM", "state", "STATE"]:
+            if key in props:
+                feature_key = key
+                break
+    
+    # Create state name mapping to handle potential differences
+    state_mapping = {}
+    states_in_data = set(state_counts['State'].unique())
+    
+    # Create a mapping function to match state names in data with GeoJSON
+    def map_state_names(state_name):
+        # Common variations in state names
+        variations = {
+            "Delhi": ["NCT of Delhi", "Delhi", "National Capital Territory of Delhi"],
+            "Jammu and Kashmir": ["Jammu & Kashmir", "J&K", "Jammu & Kashmir"],
+            "Andaman and Nicobar Islands": ["A & N Islands", "Andaman & Nicobar", "Andaman & Nicobar Islands"],
+            "Dadra and Nagar Haveli": ["Dadra & Nagar Haveli", "DNH"],
+            "Daman and Diu": ["Daman & Diu"],
+            "Tamil Nadu": ["Tamilnadu"],
+            "Puducherry": ["Pondicherry"],
+            "Odisha": ["Orissa"],
+            "Uttarakhand": ["Uttaranchal"],
+            "Telangana": ["Telengana"]
+        }
+        
+        # Try variations if available
+        if state_name in variations:
+            return variations[state_name]
+        
+        # Otherwise return just the original name
+        return [state_name]
+    
+    # Map data state names to possible GeoJSON state names
+    for state in states_in_data:
+        state_mapping[state] = map_state_names(state)
+    
+    # Get all available states from GeoJSON to ensure full India outline is shown
+    geojson_states = []
+    if india_geojson and "features" in india_geojson:
+        for feature in india_geojson["features"]:
+            if "properties" in feature and feature_key in feature["properties"]:
+                geojson_states.append(feature["properties"][feature_key])
+    
+    # Create a complete dataset with all states, including those with no data
+    complete_state_data = []
+    for state in geojson_states:
+        state_data = state_counts[state_counts['State'] == state]
+        if len(state_data) > 0:
+            # State exists in our data
+            complete_state_data.append(state_data.iloc[0].to_dict())
+        else:
+            # State doesn't exist in our data, add with count 0
+            complete_state_data.append({
+                'State': state,
+                'Accident_Count': 0,
+                'Min': min_accidents,
+                'Max': max_accidents
+            })
+    
+    # Convert to DataFrame
+    complete_df = pd.DataFrame(complete_state_data)
+    
+    # Only use non-zero values for color range to ensure proper gradient
+    non_zero_min = complete_df[complete_df['Accident_Count'] > 0]['Accident_Count'].min()
+    non_zero_max = complete_df['Accident_Count'].max()
+    
+    # Create the choropleth map
+    fig = px.choropleth_mapbox(
+        complete_df,
+        geojson=india_geojson,
+        locations='State',
+        featureidkey=f"properties.{feature_key}",
+        color='Accident_Count',
+        color_continuous_scale=[
+            [0, 'white'],  # 0 accidents (no data)
+            [non_zero_min/non_zero_max, 'blue'],  # minimum accidents
+            [1, 'red']  # maximum accidents
+        ],
+        range_color=[0, non_zero_max],  # Set the range from 0 to max accidents
+        mapbox_style="carto-positron",
+        zoom=3.8,
+        center={"lat": 22.5937, "lon": 78.9629},  # Center of India
+        opacity=0.85,
+        labels={'Accident_Count': 'Number of Accidents'},
+        hover_data={
+            'Accident_Count': True,
+            'Min': False,
+            'Max': False
+        },
+        custom_data=['Accident_Count']
+    )
+    
+    # Add state borders for better visibility
+    fig.update_traces(
+        marker=dict(line=dict(width=1, color='black')),
+        hovertemplate="<b>%{location}</b><br>Accidents: %{customdata[0]}<br>%{customdata[0] === 0 ? '<i>Data not available</i>' : ''}<extra></extra>"
+    )
+    
+    # Update the color axis
+    fig.update_layout(
+        height=600,
+        margin={"r": 0, "t": 0, "l": 0, "b": 0},
+        coloraxis_colorbar=dict(
+            title="Accident Count",
+            tickvals=[0, non_zero_min, non_zero_max],
+            ticktext=["No data", f"Minimum ({non_zero_min})", f"Maximum ({non_zero_max})"]
+        ),
+        mapbox=dict(
+            style="carto-positron",
+            zoom=3.8,
+            center={"lat": 22.5937, "lon": 78.9629}
+        )
+    )
+    
+    return fig, state_counts
+
+
 # Main function
 def main():
     st.title("Industrial Accidents Analysis Dashboard")
@@ -568,6 +707,21 @@ def main():
     with tab3:
         st.header("Geographic Analysis")
         
+        # Add the Choropleth map from indian_accidents_geo_analysis.py
+        st.subheader("Accident Distribution by State (Heat Map)")
+        choropleth_map, state_counts = create_choropleth_map(df)
+        st.plotly_chart(choropleth_map, use_container_width=True)
+        
+        st.markdown("""
+        **Insights:**
+        - The heat map shows state-wise accident intensity with red indicating higher accident counts and blue indicating lower counts.
+        - States with the highest industrial accident counts are shown in darker red.
+        - White areas indicate states with no recorded accidents in the dataset.
+        - The visualization helps identify regional patterns and state-specific risk levels.
+        - This map can guide resource allocation for safety programs based on geographic need.
+        """)
+
+        
         # 1. State vs Industry Sector
         st.subheader("State and Industry Sector Distribution")
         state_sector = df.groupby(['State', 'Industry Sector']).size().reset_index(name='Count')
@@ -575,13 +729,84 @@ def main():
                                     title='Accident Distribution by State and Industry Sector',
                                     color='Count', color_continuous_scale='RdBu')
         st.plotly_chart(fig_state_sector, use_container_width=True)
+        # st.markdown("""
+        # **Insights:**
+        # - Shows concentration of accidents by state and sector
+        # - Identifies high-risk state-industry combinations
+        # - Helps in targeted safety interventions
+        # """)
+        
+        
+        # Insights for the treemap
+        st.markdown(
+            """
+            <div class="insight-box">
+                <div class="insight-title">Key Geographic Distribution Insights:</div>
+                <ul>
+                    <li>The treemap visualization provides a hierarchical view of accident distribution, showing which states have the highest accident counts and the industry sectors contributing to these accidents.</li>
+                    <li>Larger blocks represent states with more accidents, while the nested blocks show the proportion of accidents by industry sector within each state.</li>
+                    <li>Manufacturing and construction sectors dominate accident counts in most industrialized states.</li>
+                    <li>Some states show unique industry-specific patterns that require targeted safety interventions.</li>
+                    <li>The color intensity indicates accident frequency, helping to identify the most critical state-industry combinations for safety focus.</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # Add Severity Distribution by States
+        st.subheader("Severity Distribution by States")
+        # Calculate severity distribution for each state
+        severity_state = df.groupby(['State', 'Accident Severity']).size().reset_index(name='Count')
+        # Calculate percentage within each state
+        total_by_state = severity_state.groupby('State')['Count'].transform('sum')
+        severity_state['Percentage'] = (severity_state['Count'] / total_by_state * 100).round(1)
+        
+        # Sort states by total accidents for better visualization
+        state_order = df.groupby('State').size().sort_values(ascending=False).index
+        
+        # Create the stacked bar chart
+        fig_severity_state = px.bar(severity_state,
+                                  x='State',
+                                  y='Percentage',
+                                  color='Accident Severity',
+                                  title='Accident Severity Distribution by State',
+                                  text=severity_state['Percentage'].round(1).astype(str) + '%',
+                                  category_orders={'State': state_order},
+                                  color_discrete_sequence=px.colors.qualitative.Set2)
+        
+        # Update layout for better readability
+        fig_severity_state.update_layout(
+            xaxis_title="State",
+            yaxis_title="Percentage of State's Total Accidents",
+            showlegend=True,
+            xaxis_tickangle=-45,
+            height=600,  # Increase height for better visibility
+            yaxis=dict(range=[0, 100])  # Set y-axis range from 0 to 100%
+        )
+        
+        # Update hover template to show both percentage and actual count
+        fig_severity_state.update_traces(
+            textposition='inside',
+            hovertemplate="<b>%{x}</b><br>" +
+                         "Severity: %{customdata}<br>" +
+                         "Percentage: %{y:.1f}%<br>" +
+                         "Count: %{text}<br>" +
+                         "<extra></extra>",
+            customdata=severity_state['Accident Severity']
+        )
+        
+        st.plotly_chart(fig_severity_state, use_container_width=True)
         st.markdown("""
         **Insights:**
-        - Shows concentration of accidents by state and sector
-        - Identifies high-risk state-industry combinations
-        - Helps in targeted safety interventions
+        - Shows the proportion of different accident severities within each state
+        - Helps identify states with higher percentages of severe accidents
+        - Enables comparison of severity patterns across states
+        - Useful for state-specific safety policy planning
+        - Highlights states that need focused intervention for severe accident prevention
         """)
-        
+
+
         # 2. Local Area Analysis
         st.subheader("Accidents by Local Area")
         local_counts = df['Local'].value_counts().head(10)
